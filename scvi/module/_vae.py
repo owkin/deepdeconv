@@ -400,25 +400,31 @@ class VAE(BaseMinifiedModeModuleClass):
 
         Runs the inference (encoder) model.
         """
+        from scipy.optimize import nnls
+
         x_ = x
         x_pseudobulk_ = x.mean(axis=0).unsqueeze(0)
 
         # create signature
-        # Initialize tensors to store sums and counts for each unique index
-        # unique_indices, inverse_indices = torch.unique(cat_covs, return_inverse=True)
-        # sums = torch.zeros_like(unique_indices, dtype=x_.dtype)
-        # counts = torch.zeros_like(unique_indices, dtype=torch.float)
-        # # Accumulate sums and counts for each unique index
-        # x_inverse = x_[inverse_indices]
-        # sums.scatter_add_(0, inverse_indices, x_inverse)
-        # counts.scatter_add_(0, inverse_indices, torch.ones_like(values, dtype=torch.float))
-        # x_signature =
+        unique_indices, counts = cat_covs.unique(return_counts=True)
+        proportions = counts.float() / len(cat_covs)
+        if signature_type == "pre_encoding":
+            # create signature matrix - pre-encoding
+            x_signature = []
+            for cell_type in unique_indices:
+                idx = (cat_covs == cell_type).flatten()
+                x_pure = x_[idx, :].mean(axis=0)
+                x_signature.append(x_pure)
+            x_signature = torch.stack(x_signature, dim=0)
+
         if self.use_observed_lib_size:
             library = torch.log(x.sum(axis=1)).unsqueeze(1)
             library_pseudobulk = torch.log(x.sum())
+            library_signature = torch.log(x_signature.sum(axis=1)).unsqueeze(1)
         if self.log_variational:
             x_ = torch.log(1 + x_)
             x_pseudobulk_ = torch.log(1 + x_pseudobulk_)
+            x_signature_ = torch.log(1 + x_signature)
         if cont_covs is not None and self.encode_covariates:
             encoder_input = torch.cat(
                 (x_, cont_covs),
@@ -428,21 +434,45 @@ class VAE(BaseMinifiedModeModuleClass):
                 (x_pseudobulk_, cont_covs.mean(axis=0)),
                 dim=-1
             )
+            encoder_signature_input = torch.cat(
+                (x_signature_, cont_covs),
+                dim=-1
+            )
         else:
             encoder_input = x_
             encoder_pseudobulk_input = x_pseudobulk_
+            encoder_signature_input = x_signature_
         if cat_covs is not None and self.encode_covariates:
             categorical_input = torch.split(cat_covs, 1, dim=1)
         else:
             categorical_input = ()
 
+        # regular encoding
         qz, z = self.z_encoder(encoder_input, batch_index, *categorical_input)
         # pseudobulk encoding
         qz_pseudobulk, z_pseudobulk = self.z_encoder(encoder_pseudobulk_input,
                                                      torch.tensor([0]).unsqueeze(0),
                                                      *categorical_input)
+        # pure cell type signature encoding
+        if signature_type == "pre-encoding":
+            # create signature matrix - pre-encoding
+            qz_signature, z_signature = self.z_encoder(encoder_signature_input,
+                                                    torch.tensor([0]).unsqueeze(0),
+                                                    *categorical_input)
+        else:
+            # create signature matrix - post-encoding
+            z_signature = []
+            for cell_type in unique_indices:
+                idx = (cat_covs == cell_type).flatten()
+                z_pure = z[idx, :].mean(axis=0)
+                z_signature.append(z_pure)
+            z_signature = torch.stack(x_signature, dim=0)
+
+        # library size
         ql = None
         ql_pseudobulk = None
+        ql_signature = None
+
         if not self.use_observed_lib_size:
             ql, library_encoded = self.l_encoder(
                 encoder_input, batch_index, *categorical_input
@@ -473,12 +503,6 @@ class VAE(BaseMinifiedModeModuleClass):
                 library = ql.sample((n_samples,))
                 library_pseudobulk = ql_pseudobulk.sample((n_samples,))
 
-        # compute proportions
-        # unique_values, counts = torch.unique(cat_covs, return_counts=True)
-        # proportions = counts.float() / len(cat_covs)
-        # # signature
-        # z_signature =
-
         outputs = {"z": z,
                    "qz": qz,
                    "ql": ql,
@@ -488,7 +512,12 @@ class VAE(BaseMinifiedModeModuleClass):
                    "qz_pseudobulk": qz_pseudobulk,
                    "ql_pseudobulk": ql_pseudobulk,
                    "library_pseudobulk": library_pseudobulk,
-                #    "proportions": proportions
+                   # pure cell type signature encodings
+                   "proportions": proportions,
+                   "z_signature": z_signature,
+                   "qz_signature": qz_signature,
+                   "ql_signature": ql_signature,
+                   "library_signature": library_signature,
                    }
 
         return outputs
