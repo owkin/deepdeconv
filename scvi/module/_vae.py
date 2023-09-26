@@ -20,6 +20,39 @@ torch.backends.cudnn.benchmark = True
 
 logger = logging.getLogger(__name__)
 
+def pearsonr(x, y):
+    """
+    Mimics `scipy.stats.pearsonr`
+    Arguments
+    ---------
+    x : 1D torch.Tensor
+    y : 1D torch.Tensor
+    Returns
+    -------
+    r_val : float
+        pearsonr correlation coefficient between x and y
+
+    Scipy docs ref:
+        https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.pearsonr.html
+
+    Scipy code ref:
+        https://github.com/scipy/scipy/blob/v0.19.0/scipy/stats/stats.py#L2975-L3033
+    Example:
+        >>> x = np.random.randn(100)
+        >>> y = np.random.randn(100)
+        >>> sp_corr = scipy.stats.pearsonr(x, y)[0]
+        >>> th_corr = pearsonr(torch.from_numpy(x), torch.from_numpy(y))
+        >>> np.allclose(sp_corr, th_corr)
+    """
+    mean_x = torch.mean(x)
+    mean_y = torch.mean(y)
+    xm = x.sub(mean_x)
+    ym = y.sub(mean_y)
+    r_num = xm.dot(ym)
+    r_den = torch.norm(xm, 2) * torch.norm(ym, 2)
+    r_val = r_num / r_den
+    return r_val
+
 
 class VAE(BaseMinifiedModeModuleClass):
     """Variational auto-encoder model.
@@ -114,7 +147,7 @@ class VAE(BaseMinifiedModeModuleClass):
         latent_distribution: Tunable[Literal["normal", "ln"]] = "normal",
         encode_covariates: Tunable[bool] = False,
         deeply_inject_covariates: Tunable[bool] = True,
-        use_batch_norm: Tunable[Literal["encoder", "decoder", "none", "both"]] = "both",
+        use_batch_norm: Tunable[Literal["encoder", "decoder", "none", "both"]] = "none",
         use_layer_norm: Tunable[Literal["encoder", "decoder", "none", "both"]] = "none",
         use_size_factor_key: bool = False,
         use_observed_lib_size: bool = True,
@@ -306,40 +339,122 @@ class VAE(BaseMinifiedModeModuleClass):
         )
         return local_library_log_means, local_library_log_vars
 
+    # @auto_move_data
+    # def _regular_inference(
+    #     self,
+    #     x,
+    #     batch_index,
+    #     cont_covs=None,
+    #     cat_covs=None,
+    #     n_samples=1,
+    # ):
+    #     """High level inference method.
+
+    #     Runs the inference (encoder) model.
+    #     """
+    #     x_ = x
+    #     if self.use_observed_lib_size:
+    #         library = torch.log(x.sum(1)).unsqueeze(1)
+    #     if self.log_variational:
+    #         x_ = torch.log(1 + x_)
+
+    #     if cont_covs is not None and self.encode_covariates:
+    #         encoder_input = torch.cat((x_, cont_covs), dim=-1)
+    #     else:
+    #         encoder_input = x_
+    #     if cat_covs is not None and self.encode_covariates:
+    #         categorical_input = torch.split(cat_covs, 1, dim=1)
+    #     else:
+    #         categorical_input = ()
+    #     qz, z = self.z_encoder(encoder_input, batch_index, *categorical_input)
+    #     ql = None
+    #     if not self.use_observed_lib_size:
+    #         ql, library_encoded = self.l_encoder(
+    #             encoder_input, batch_index, *categorical_input
+    #         )
+    #         library = library_encoded
+
+    #     if n_samples > 1:
+    #         untran_z = qz.sample((n_samples,))
+    #         z = self.z_encoder.z_transformation(untran_z)
+    #         if self.use_observed_lib_size:
+    #             library = library.unsqueeze(0).expand(
+    #                 (n_samples, library.size(0), library.size(1))
+    #             )
+    #         else:
+    #             library = ql.sample((n_samples,))
+    #     outputs = {"z": z, "qz": qz, "ql": ql, "library": library}
+    #     return outputs
+
     @auto_move_data
-    def _regular_inference(
+    def inference(
         self,
         x,
         batch_index,
         cont_covs=None,
         cat_covs=None,
+        signature_type="pre_encoding",
         n_samples=1,
     ):
-        """High level inference method.
+        """High level inference method for pseudobulks of single cells.
 
         Runs the inference (encoder) model.
         """
         x_ = x
+        x_pseudobulk_ = x.mean(axis=0).unsqueeze(0)
+
+        # create signature
+        # Initialize tensors to store sums and counts for each unique index
+        # unique_indices, inverse_indices = torch.unique(cat_covs, return_inverse=True)
+        # sums = torch.zeros_like(unique_indices, dtype=x_.dtype)
+        # counts = torch.zeros_like(unique_indices, dtype=torch.float)
+        # # Accumulate sums and counts for each unique index
+        # x_inverse = x_[inverse_indices]
+        # sums.scatter_add_(0, inverse_indices, x_inverse)
+        # counts.scatter_add_(0, inverse_indices, torch.ones_like(values, dtype=torch.float))
+        # x_signature =
         if self.use_observed_lib_size:
-            library = torch.log(x.sum(1)).unsqueeze(1)
+            library = torch.log(x.sum(axis=1)).unsqueeze(1)
+            library_pseudobulk = torch.log(x.sum())
         if self.log_variational:
             x_ = torch.log(1 + x_)
-
+            x_pseudobulk_ = torch.log(1 + x_pseudobulk_)
         if cont_covs is not None and self.encode_covariates:
-            encoder_input = torch.cat((x_, cont_covs), dim=-1)
+            encoder_input = torch.cat(
+                (x_, cont_covs),
+                dim=-1
+            )
+            encoder_pseudobulk_input = torch.cat(
+                (x_pseudobulk_, cont_covs.mean(axis=0)),
+                dim=-1
+            )
         else:
             encoder_input = x_
+            encoder_pseudobulk_input = x_pseudobulk_
         if cat_covs is not None and self.encode_covariates:
             categorical_input = torch.split(cat_covs, 1, dim=1)
         else:
             categorical_input = ()
+
         qz, z = self.z_encoder(encoder_input, batch_index, *categorical_input)
+        # pseudobulk encoding
+        qz_pseudobulk, z_pseudobulk = self.z_encoder(encoder_pseudobulk_input,
+                                                     torch.tensor([0]).unsqueeze(0),
+                                                     *categorical_input)
         ql = None
+        ql_pseudobulk = None
         if not self.use_observed_lib_size:
             ql, library_encoded = self.l_encoder(
                 encoder_input, batch_index, *categorical_input
             )
             library = library_encoded
+            # pseudobulk encoding
+            ql_pseudobulk, library_pseudobulk_encoded = self.encoder(
+                encoder_pseudobulk_input,
+                batch_index,
+                *categorical_input
+            )
+            library_pseudobulk = library_pseudobulk_encoded
 
         if n_samples > 1:
             untran_z = qz.sample((n_samples,))
@@ -348,10 +463,36 @@ class VAE(BaseMinifiedModeModuleClass):
                 library = library.unsqueeze(0).expand(
                     (n_samples, library.size(0), library.size(1))
                 )
+                library_pseudobulk = library_pseudobulk.unsqueeze(0).expand(
+                    (n_samples,
+                    library_pseudobulk.size(0),
+                    library.size(1)
+                    )
+                )
             else:
                 library = ql.sample((n_samples,))
-        outputs = {"z": z, "qz": qz, "ql": ql, "library": library}
+                library_pseudobulk = ql_pseudobulk.sample((n_samples,))
+
+        # compute proportions
+        # unique_values, counts = torch.unique(cat_covs, return_counts=True)
+        # proportions = counts.float() / len(cat_covs)
+        # # signature
+        # z_signature =
+
+        outputs = {"z": z,
+                   "qz": qz,
+                   "ql": ql,
+                   "library": library,
+                   # pseudobulk encodings
+                   "z_pseudobulk": z_pseudobulk,
+                   "qz_pseudobulk": qz_pseudobulk,
+                   "ql_pseudobulk": ql_pseudobulk,
+                   "library_pseudobulk": library_pseudobulk,
+                #    "proportions": proportions
+                   }
+
         return outputs
+
 
     @auto_move_data
     def _cached_inference(self, qzm, qzv, observed_lib_size, n_samples=1):
@@ -454,6 +595,43 @@ class VAE(BaseMinifiedModeModuleClass):
             "pz": pz,
         }
 
+    # def loss(
+    #     self,
+    #     tensors,
+    #     inference_outputs,
+    #     generative_outputs,
+    #     kl_weight: float = 1.0,
+    # ):
+    #     """Computes the loss function for the model."""
+    #     x = tensors[REGISTRY_KEYS.X_KEY]
+    #     kl_divergence_z = kl(inference_outputs["qz"], generative_outputs["pz"]).sum(
+    #         dim=-1
+    #     )
+    #     if not self.use_observed_lib_size:
+    #         kl_divergence_l = kl(
+    #             inference_outputs["ql"],
+    #             generative_outputs["pl"],
+    #         ).sum(dim=1)
+    #     else:
+    #         kl_divergence_l = torch.tensor(0.0, device=x.device)
+
+    #     reconst_loss = -generative_outputs["px"].log_prob(x).sum(-1)
+
+    #     kl_local_for_warmup = kl_divergence_z
+    #     kl_local_no_warmup = kl_divergence_l
+
+    #     weighted_kl_local = kl_weight * kl_local_for_warmup + kl_local_no_warmup
+
+    #     loss = torch.mean(reconst_loss + weighted_kl_local)
+
+    #     kl_local = {
+    #         "kl_divergence_l": kl_divergence_l,
+    #         "kl_divergence_z": kl_divergence_z,
+    #     }
+    #     return LossOutput(
+    #         loss=loss, reconstruction_loss=reconst_loss, kl_local=kl_local
+    #     )
+
     def loss(
         self,
         tensors,
@@ -481,14 +659,34 @@ class VAE(BaseMinifiedModeModuleClass):
 
         weighted_kl_local = kl_weight * kl_local_for_warmup + kl_local_no_warmup
 
-        loss = torch.mean(reconst_loss + weighted_kl_local)
+        # kl divergence pseudobulk (vs) sum(cells)
+        # kl_divergence_pseudobulk = kl(inference_outputs["qz"],
+        #                               inference_outputs["qz_pseudobulk"]).sum(
+        #     dim=-1
+        # )
+
+        # l2 penalty in latent space
+        mean_z = torch.mean(inference_outputs["z"], axis=0)
+        l2_loss = torch.sum((inference_outputs["z_pseudobulk"].squeeze(0) - mean_z)**2)
+        pearson_coeff = pearsonr(mean_z, inference_outputs["z_pseudobulk"].squeeze(0))
+
+        loss = torch.mean(reconst_loss + weighted_kl_local) # + l2_loss
+
+        reconst_losses = {
+            "reconst_loss": reconst_loss,
+            "l2_latent_loss": l2_loss,
+            "pearson_coeff": pearson_coeff
+        }
+
 
         kl_local = {
             "kl_divergence_l": kl_divergence_l,
             "kl_divergence_z": kl_divergence_z,
+            # "kl_divergence_pseudobulk": kl_divergence_pseudobulk,
         }
         return LossOutput(
-            loss=loss, reconstruction_loss=reconst_loss, kl_local=kl_local
+            loss=loss, reconstruction_loss=reconst_loss, kl_local=kl_local,
+            extra_metrics={"l2_loss": l2_loss, "pearson_coeff": pearson_coeff}
         )
 
     @torch.inference_mode()
