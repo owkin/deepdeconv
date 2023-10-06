@@ -397,7 +397,7 @@ class VAE(BaseMinifiedModeModuleClass):
         batch_index,
         cont_covs=None,
         cat_covs=None,
-        signature_type="post_encoding",
+        signature_type="pre_encoding",
         n_samples=1,
     ):
         """High level inference method for pseudobulks of single cells.
@@ -410,14 +410,12 @@ class VAE(BaseMinifiedModeModuleClass):
         # create signature
         unique_indices, counts = cat_covs.unique(return_counts=True)
         proportions = counts.float() / len(cat_covs)
-        if signature_type == "pre_encoding":
-            # create signature matrix - pre-encoding
-            x_signature = []
-            for cell_type in unique_indices:
-                idx = (cat_covs == cell_type).flatten()
-                x_pure = x_[idx, :].mean(axis=0)
-                x_signature.append(x_pure)
-            x_signature = torch.stack(x_signature, dim=0)
+        x_signature = []
+        for cell_type in unique_indices:
+            idx = (cat_covs == cell_type).flatten()
+            x_pure = x_[idx, :].mean(axis=0)
+            x_signature.append(x_pure)
+        x_signature = torch.stack(x_signature, dim=0)
 
         if self.use_observed_lib_size:
             library = torch.log(x.sum(axis=1)).unsqueeze(1)
@@ -468,7 +466,8 @@ class VAE(BaseMinifiedModeModuleClass):
                 idx = (cat_covs == cell_type).flatten()
                 z_pure = z[idx, :].mean(axis=0)
                 z_signature.append(z_pure)
-            z_signature = torch.stack(x_signature, dim=0)
+            z_signature = torch.stack(z_signature, dim=0)
+            qz_signature = None
 
         # library size
         ql = None
