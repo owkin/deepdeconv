@@ -16,11 +16,15 @@ from scvi.distributions import NegativeBinomial, Poisson, ZeroInflatedNegativeBi
 from scvi.module.base import BaseMinifiedModeModuleClass, LossOutput, auto_move_data
 from scvi.nn import DecoderSCVI, Encoder, LinearDecoderSCVI, one_hot
 
+# for deconvolution
+from scipy.optimize import nnls
+from scipy.stats import pearsonr
+
 torch.backends.cudnn.benchmark = True
 
 logger = logging.getLogger(__name__)
 
-def pearsonr(x, y):
+def pearsonr_torch(x, y):
     """
     Mimics `scipy.stats.pearsonr`
     Arguments
@@ -393,15 +397,13 @@ class VAE(BaseMinifiedModeModuleClass):
         batch_index,
         cont_covs=None,
         cat_covs=None,
-        signature_type="pre_encoding",
+        signature_type="post_encoding",
         n_samples=1,
     ):
         """High level inference method for pseudobulks of single cells.
 
         Runs the inference (encoder) model.
         """
-        from scipy.optimize import nnls
-
         x_ = x
         x_pseudobulk_ = x.mean(axis=0).unsqueeze(0)
 
@@ -454,7 +456,7 @@ class VAE(BaseMinifiedModeModuleClass):
                                                      torch.tensor([0]).unsqueeze(0),
                                                      *categorical_input)
         # pure cell type signature encoding
-        if signature_type == "pre-encoding":
+        if signature_type == "pre_encoding":
             # create signature matrix - pre-encoding
             qz_signature, z_signature = self.z_encoder(encoder_signature_input,
                                                     torch.tensor([0]).unsqueeze(0),
@@ -478,13 +480,7 @@ class VAE(BaseMinifiedModeModuleClass):
                 encoder_input, batch_index, *categorical_input
             )
             library = library_encoded
-            # pseudobulk encoding
-            ql_pseudobulk, library_pseudobulk_encoded = self.encoder(
-                encoder_pseudobulk_input,
-                batch_index,
-                *categorical_input
-            )
-            library_pseudobulk = library_pseudobulk_encoded
+            # TO DO: for library size of pseudobulk, pure cell type signature
 
         if n_samples > 1:
             untran_z = qz.sample((n_samples,))
@@ -492,12 +488,6 @@ class VAE(BaseMinifiedModeModuleClass):
             if self.use_observed_lib_size:
                 library = library.unsqueeze(0).expand(
                     (n_samples, library.size(0), library.size(1))
-                )
-                library_pseudobulk = library_pseudobulk.unsqueeze(0).expand(
-                    (n_samples,
-                    library_pseudobulk.size(0),
-                    library.size(1)
-                    )
                 )
             else:
                 library = ql.sample((n_samples,))
@@ -697,25 +687,47 @@ class VAE(BaseMinifiedModeModuleClass):
         # l2 penalty in latent space
         mean_z = torch.mean(inference_outputs["z"], axis=0)
         l2_loss = torch.sum((inference_outputs["z_pseudobulk"].squeeze(0) - mean_z)**2)
-        pearson_coeff = pearsonr(mean_z, inference_outputs["z_pseudobulk"].squeeze(0))
+        pearson_coeff = pearsonr_torch(mean_z, inference_outputs["z_pseudobulk"].squeeze(0))
 
-        loss = torch.mean(reconst_loss + weighted_kl_local) # + l2_loss
+        loss = torch.mean(reconst_loss + weighted_kl_local) + l2_loss
 
+        # deconvolution in latent space
+        predicted_proportions = nnls(
+            inference_outputs["z_signature"].detach().cpu().numpy().T,
+            inference_outputs["z_pseudobulk"].detach().cpu().numpy().flatten()
+            )[0]
+        predicted_proportions = (
+            predicted_proportions / predicted_proportions.sum()
+        )
+        prorportions_array = inference_outputs["proportions"].detach().cpu().numpy()
+        cosine_similarity = (
+            np.dot(prorportions_array,
+                   predicted_proportions)
+            / np.linalg.norm(prorportions_array)
+            / np.linalg.norm(predicted_proportions)
+        )
+        pearson_coeff_deconv = pearsonr(prorportions_array,
+                                        predicted_proportions
+                                        )[0]
+
+        # logging
         reconst_losses = {
             "reconst_loss": reconst_loss,
             "l2_latent_loss": l2_loss,
-            "pearson_coeff": pearson_coeff
         }
-
 
         kl_local = {
             "kl_divergence_l": kl_divergence_l,
             "kl_divergence_z": kl_divergence_z,
-            # "kl_divergence_pseudobulk": kl_divergence_pseudobulk,
         }
+
         return LossOutput(
             loss=loss, reconstruction_loss=reconst_loss, kl_local=kl_local,
-            extra_metrics={"l2_loss": l2_loss, "pearson_coeff": pearson_coeff}
+            extra_metrics={
+                "l2_loss": l2_loss, "pearson_coeff": pearson_coeff,
+                "cosine_similarity": cosine_similarity,
+                "pearson_coeff_deconv": pearson_coeff_deconv,
+                }
         )
 
     @torch.inference_mode()
