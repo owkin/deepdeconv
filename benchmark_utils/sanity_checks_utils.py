@@ -2,6 +2,12 @@
 
 import pandas as pd
 from loguru import logger
+import anndata as ad
+
+from typing import List, Dict
+
+from TAPE import Deconvolution
+from TAPE.deconvolution import ScadenDeconvolution
 
 from benchmark_utils import (
     create_latent_signature,
@@ -10,6 +16,19 @@ from benchmark_utils import (
     compute_correlations,
     compute_group_correlations,
 )
+
+def melt_df(deconv_results):
+    """Melt the deconv results for seaborn"""
+    deconv_results_melted = pd.melt( # melt the matrix for seaborn
+            deconv_results.T.reset_index(),
+            id_vars="index",
+            var_name="Cell type",
+            value_name="Estimated Fraction",
+        ).rename({"index": "Cell type predicted"}, axis=1)
+    deconv_results_melted_methods_temp = deconv_results_melted.loc[
+        deconv_results_melted["Cell type predicted"] == deconv_results_melted["Cell type"]
+    ].copy()
+    return deconv_results_melted_methods_temp
 
 def run_incompatible_value_checks(
     pseudo_bulk, loss_computation, use_batch_norm, mixup_penalty, gene_likelihood
@@ -136,115 +155,74 @@ def run_categorical_value_checks(
 
 
 def run_purified_sanity_check(
-    adata_train,
-    adata_pseudobulk_test,
-    signature,
-    intersection,
-    scvi_model,
-    mixupvi_model,
-    only_fit_baseline_nnls,
+    adata_train: ad.AnnData,
+    adata_pseudobulk_test: ad.AnnData,
+    signature: pd.DataFrame,
+    intersection: List[str],
+    generative_models: Dict[str, str],
+    baselines: List[str],
 ):
     """Run sanity check 1 on purified cell types.
-    Possibility to only fit NNLS with only_fit_baseline_nnls==True
-    TODO add other models such as random proportions, destvi, tape..."""
+
+    """
     logger.info("Running sanity check...")
-    ### Linear regression (NNLS)
-    deconv_results = perform_nnls(signature, adata_pseudobulk_test[:, intersection])
+
+    ### 1. Baselines
+    if "nnls" in baselines:
+        deconv_results = perform_nnls(signature, adata_pseudobulk_test[:, intersection])
     deconv_results_melted = pd.melt( # melt the matrix for seaborn
         deconv_results.T.reset_index(),
         id_vars="index",
         var_name="Cell type",
         value_name="Estimated Fraction",
     ).rename({"index": "Cell type predicted"}, axis=1)
-    if only_fit_baseline_nnls:
+    if generative_models == {}:
         return deconv_results_melted
 
     # create dataframe with different methods
     deconv_results_melted_methods = deconv_results_melted.loc[
         deconv_results_melted["Cell type predicted"] == deconv_results_melted["Cell type"]
     ].copy()
-    deconv_results_melted_methods["Method"] = "NNLS"
+    deconv_results_melted_methods["Method"] = "nnls"
 
-     ### scVI
-    adata_latent_signature = create_latent_signature(
-        adata=adata_train,
-        model=scvi_model,
-        average_all_cells = True,
-        sc_per_pseudobulk=3000,
-    )
-    deconv_results = perform_latent_deconv(
-        adata_pseudobulk=adata_pseudobulk_test,
-        adata_latent_signature=adata_latent_signature,
-        model=scvi_model,
-    )
-    deconv_results_melted = pd.melt( # melt the matrix for seaborn
-        deconv_results.T.reset_index(),
-        id_vars="index",
-        var_name="Cell type",
-        value_name="Estimated Fraction",
-    ).rename({"index": "Cell type predicted"}, axis=1)
-    deconv_results_melted_methods_temp = deconv_results_melted.loc[
-        deconv_results_melted["Cell type predicted"] == deconv_results_melted["Cell type"]
-    ].copy()
-    deconv_results_melted_methods_temp["Method"] = "scVI"
-    deconv_results_melted_methods = pd.concat(
-        [deconv_results_melted_methods, deconv_results_melted_methods_temp]
-    )
-
-    ### MixupVI
-    adata_latent_signature = create_latent_signature(
-        adata=adata_train,
-        model=mixupvi_model,
-        average_all_cells = True,
-        sc_per_pseudobulk=3000,
-    )
-    deconv_results = perform_latent_deconv(
-        adata_pseudobulk=adata_pseudobulk_test,
-        adata_latent_signature=adata_latent_signature,
-        model=mixupvi_model
-    )
-    deconv_results_melted = pd.melt( # melt the matrix for seaborn
-        deconv_results.T.reset_index(),
-        id_vars="index",
-        var_name="Cell type",
-        value_name="Estimated Fraction",
-    ).rename({"index": "Cell type predicted"}, axis=1)
-    deconv_results_melted_methods_temp = deconv_results_melted.loc[
-        deconv_results_melted["Cell type predicted"] == deconv_results_melted["Cell type"]
-    ].copy()
-    deconv_results_melted_methods_temp["Method"] = "MixupVI"
-    deconv_results_melted_methods = pd.concat(
-        [deconv_results_melted_methods, deconv_results_melted_methods_temp]
-    )
-
-    ### TODO DestVI
-    # deconv_results = destvi_model.get_proportions(adata_pseudobulk, deterministic=True)
-    # deconv_results_melted = pd.melt( # melt the matrix for seaborn
-    #     deconv_results.T.reset_index(),
-    #     id_vars="index",
-    #     var_name="Cell type",
-    #     value_name="Estimated Fraction",
-    # ).rename({"index": "Cell type predicted"}, axis=1)
-    # deconv_results_melted_methods_temp = deconv_results_melted.loc[
-    #     deconv_results_melted["Cell type predicted"] == deconv_results_melted["Cell type"]
-    # ].copy()
-    # deconv_results_melted_methods_temp["Method"] = "DestVI"
-    # deconv_results_melted_methods = pd.concat(
-    #     [deconv_results_melted_methods, deconv_results_melted_methods_temp]
-    # )
-
+    ### 2. Generative models
+    for model in generative_models.keys():
+        if model == "DestVI":
+            # deconv_results = generative_models[model].get_proportions(adata_pseudobulk_test)
+            # deconv_results_melted_methods_tmp = melt_df(deconv_results)
+            # deconv_results_melted_methods_tmp["Method"] = model
+            # deconv_results_melted_methods = pd.concat(
+            #     [deconv_results_melted_methods, deconv_results_melted_methods_tmp]
+            # )
+            continue
+        else:
+            adata_latent_signature = create_latent_signature(
+                adata=adata_train,
+                model=generative_models[model],
+                average_all_cells = True,
+                sc_per_pseudobulk=3000,
+            )
+            deconv_results = perform_latent_deconv(
+                adata_pseudobulk=adata_pseudobulk_test,
+                adata_latent_signature=adata_latent_signature,
+                model=generative_models[model],
+            )
+            deconv_results_melted_methods_tmp = melt_df(deconv_results)
+            deconv_results_melted_methods_tmp["Method"] = model
+            deconv_results_melted_methods = pd.concat(
+                [deconv_results_melted_methods, deconv_results_melted_methods_tmp]
+            )
     return deconv_results_melted_methods
 
 
 def run_sanity_check(
-    adata_train,
-    adata_pseudobulk_test,
-    df_proportions_test,
-    signature,
-    intersection,
-    scvi_model,
-    mixupvi_model,
-    only_fit_baseline_nnls,
+    adata_train: ad.AnnData,
+    adata_pseudobulk_test: ad.AnnData,
+    df_proportions_test: pd.DataFrame,
+    signature: pd.DataFrame,
+    intersection: List,
+    generative_models: Dict[str, str],
+    baselines: List[str],
 ):
     """Run one of sanity checks 2 and 3.
     Possibility to only fit NNLS with only_fit_baseline_nnls==True
@@ -252,66 +230,60 @@ def run_sanity_check(
     logger.info("Running sanity check...")
      # create dataframe with different methods
     df_test_correlations = pd.DataFrame(
-        index=adata_pseudobulk_test.obs_names, columns=["scVI", "MixupVI", "NNLS"]
-    )  # TODO "Random", "DestVI"]
+        index=adata_pseudobulk_test.obs_names,
+        columns=list(generative_models.keys()) + baselines
+    )
     df_test_group_correlations = pd.DataFrame(
-        index=df_proportions_test.columns, columns=["scVI", "MixupVI", "NNLS"]
-    )  # TODO "Random", "DestVI"]
-
-    ### Random proportions
-    # TODO:
-    #
-
-
-    ### Linear regression (NNLS)
-    deconv_results = perform_nnls(signature, adata_pseudobulk_test[:, intersection])
-    correlations = compute_correlations(deconv_results, df_proportions_test)
-    group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
-    df_test_correlations.loc[:, "NNLS"] = correlations.values
-    df_test_group_correlations.loc[:, "NNLS"] = group_correlations.values
-    if only_fit_baseline_nnls:
-        return df_test_correlations, df_test_group_correlations
-
-    ### scVI
-    adata_latent_signature = create_latent_signature(
-        adata=adata_train,
-        model=scvi_model,
-        average_all_cells = True,
-        sc_per_pseudobulk=3000,
+        index=df_proportions_test.columns,
+        columns=list(generative_models.keys()) + baselines
     )
-    deconv_results = perform_latent_deconv(
-        adata_pseudobulk=adata_pseudobulk_test,
-        adata_latent_signature=adata_latent_signature,
-        model=scvi_model,
-    )
-    correlations = compute_correlations(deconv_results, df_proportions_test)
-    group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
-    df_test_correlations.loc[:, "scVI"] = correlations.values
-    df_test_group_correlations.loc[:, "scVI"] = group_correlations.values
 
-    ### MixupVI
-    adata_latent_signature = create_latent_signature(
-        adata=adata_train,
-        model=mixupvi_model,
-        average_all_cells = True,
-        sc_per_pseudobulk=3000,
-    )
-    deconv_results = perform_latent_deconv(
-        adata_pseudobulk=adata_pseudobulk_test,
-        adata_latent_signature=adata_latent_signature,
-        model=mixupvi_model
-    )
-    correlations = compute_correlations(deconv_results, df_proportions_test)
-    group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
-    df_test_correlations.loc[:, "MixupVI"] = correlations.values
-    df_test_group_correlations.loc[:, "MixupVI"] = group_correlations.values
+    ### 1. Linear regression (NNLS)
+    if "nnls" in baselines:
+        deconv_results = perform_nnls(signature, adata_pseudobulk_test[:, intersection])
+        correlations = compute_correlations(deconv_results, df_proportions_test)
+        group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
+        df_test_correlations.loc[:, "nnls"] = correlations.values
+        df_test_group_correlations.loc[:, "nnls"] = group_correlations.values
 
-    ### TODO DestVI
-    # deconv_results = destvi_model.get_proportions(adata_pseudobulk, deterministic=True)
-    # correlations = compute_correlations(deconv_results, df_proportions_test)
-    # group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
-    # df_predicted_proportions.loc[:, "DestVI"] = deconv_results
-    # df_test_correlations.loc[:, "DestVI"] = correlations.values
-    # df_test_group_correlations.loc[:, "DestVI"] = group_correlations.values
+    # if "TAPE" in baselines:
+    #     pseudobulk = adata_pseudobulk_test[:, intersection].X
+    #     signature_matrix, deconv_results = Deconvolution(signature.T, pseudobulk, sep='\t', scaler='mms',
+    #                     datatype='counts', genelenfile=None,
+    #                     mode='overall', adaptive=True, variance_threshold=0.98,
+    #                     save_model_name=None,
+    #                     batch_size=128, epochs=128, seed=1)
+    # if "Scaden" in baselines:
+
+    if generative_models == {}:
+        return df_test_group_correlations
+    ### 2. Generative models
+    for model in generative_models.keys():
+        if model == "DestVI":
+            deconv_results = generative_models[model].get_proportions(adata_pseudobulk_test)
+            deconv_results = deconv_results.drop(["noise_term"],
+                                                 axis=1,
+                                                 inplace=True)
+            deconv_results = deconv_results.loc[:, df_proportions_test.columns]
+            correlations = compute_correlations(deconv_results, df_proportions_test)
+            group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
+            df_test_correlations.loc[:, "DestVI"] = correlations.values
+            df_test_group_correlations.loc[:, "DestVI"] = group_correlations.values
+        else:
+            adata_latent_signature = create_latent_signature(
+                adata=adata_train,
+                model=generative_models[model],
+                average_all_cells = True,
+                sc_per_pseudobulk=3000,
+            )
+            deconv_results = perform_latent_deconv(
+                adata_pseudobulk=adata_pseudobulk_test,
+                adata_latent_signature=adata_latent_signature,
+                model=generative_models[model],
+            )
+            correlations = compute_correlations(deconv_results, df_proportions_test)
+            group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
+            df_test_correlations.loc[:, model] = correlations.values
+            df_test_group_correlations.loc[:, model] = group_correlations.values
 
     return df_test_correlations, df_test_group_correlations

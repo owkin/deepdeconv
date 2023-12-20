@@ -4,9 +4,13 @@ from loguru import logger
 import anndata as ad
 import scvi
 import os
+import pandas as pd
 
 from typing import Optional, Tuple
 from .sanity_checks_utils import run_categorical_value_checks, run_incompatible_value_checks
+
+from TAPE import Deconvolution
+from TAPE.deconvolution import ScadenDeconvolution
 
 from constants import (
     MAX_EPOCHS,
@@ -141,9 +145,20 @@ def fit_destvi(adata: ad.AnnData,
             )
         destvi_model = scvi.model.DestVI.from_rna_model(adata_pseudobulk, condscvi_model)
         destvi_model.view_anndata_setup()
-        destvi_model.train(max_epochs=MAX_EPOCHS)
-
+        destvi_model.train(max_epochs=2500)
+        destvi_model.save(model_path_2)
   return condscvi_model, destvi_model
 
+# def fit_tape(adata_pseudobulk: ad.AnnData,
+#              signature: pd.DataFrame,
+#              model_path: str,
+#              save_model: bool = True):
+#     """fit TAPE"""
+#     if os.path.exists(model_path):
+#             logger.info(f"Model fitted, saved in path:{model_path}, loading TAPE...")
+#             tape_model = scvi.external.TAPE.load(model_path, adata)
 
 
+# def fit_scaden(adata_pseudobulk: ad.AnnData,
+#                signature: pd.DataFrame,
+#                model_path: str,

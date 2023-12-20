@@ -15,19 +15,37 @@ import torch
 
 
 def perform_nnls(signature: pd.DataFrame,
-                 adata_pseudobulk: ad.AnnData):
+                 adata_pseudobulk_train: ad.AnnData,
+                 adata_pseudobulk_test: Optional[ad.AnnData],
+                 run_on_test: bool = True):
     """Perform deconvolution using the nnls method.
     It will be performed as many times as there are samples in averaged_data.
     """
     deconv = LinearRegression(positive=True).fit(
-        signature, adata_pseudobulk.layers["relative_counts"].T
+        signature,
+        adata_pseudobulk_train.layers["relative_counts"].T
     )
-    deconv_results = pd.DataFrame(
-        deconv.coef_, index=adata_pseudobulk.obs_names, columns=signature.columns
-    )
-    deconv_results = deconv_results.div(
-        deconv_results.sum(axis=1), axis=0
-    )  # to sum up to 1
+    if run_on_test:
+        predictions = deconv.predict(adata_pseudobulk_test)
+        deconv_results = pd.DataFrame(
+            predictions,
+            index=adata_pseudobulk_test.obs_names,
+            columns=signature.columns
+        )
+        # Normalize the results to sum up to 1
+        deconv_results = deconv_results.div(
+            deconv_results.sum(axis=1), axis=0
+        )
+    else:
+        deconv_results = pd.DataFrame(
+            deconv.coef_,
+            index=adata_pseudobulk_train.obs_names,
+            columns=signature.columns
+        )
+        # Normalize the results to sum up to 1
+        deconv_results = deconv_results.div(
+            deconv_results.sum(axis=1), axis=0
+        )
     return deconv_results
 
 

@@ -41,6 +41,8 @@ N_CELLS = 2000 # number of cells for creation of pseudobulk and latent pseudobul
 N_SAMPLES = 400 # number of pseudbulk samples to create and assess for deconvolution
 ONLY_FIT_BASELINE_NNLS = False # if True, don't fit the deep learning models
 
+GENERATIVE_MODELS = ["scVI", "MixupVI", "DestVI"]
+BASELINES = ["nnls"]
 
 # different possibilities of cell groupings with the CTI dataset
 GROUPS = {

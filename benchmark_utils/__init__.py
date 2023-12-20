@@ -16,6 +16,7 @@ from .dataset_utils import (
 )
 from .latent_signature_utils import create_latent_signature
 from .training_utils import fit_scvi, fit_destvi, fit_mixupvi
+
 from .plotting_utils import (
     plot_purified_deconv_results,
     plot_deconv_results,
