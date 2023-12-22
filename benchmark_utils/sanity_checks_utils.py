@@ -217,6 +217,7 @@ def run_purified_sanity_check(
 
 def run_sanity_check(
     adata_train: ad.AnnData,
+    adata_pseudobulk_train: ad.AnnData,
     adata_pseudobulk_test: ad.AnnData,
     df_proportions_test: pd.DataFrame,
     signature: pd.DataFrame,
@@ -240,7 +241,9 @@ def run_sanity_check(
 
     ### 1. Linear regression (NNLS)
     if "nnls" in baselines:
-        deconv_results = perform_nnls(signature, adata_pseudobulk_test[:, intersection])
+        deconv_results = perform_nnls(signature,
+                                      adata_pseudobulk_train[:, intersection],
+                                      adata_pseudobulk_test[:, intersection])
         correlations = compute_correlations(deconv_results, df_proportions_test)
         group_correlations = compute_group_correlations(deconv_results, df_proportions_test)
         df_test_correlations.loc[:, "nnls"] = correlations.values

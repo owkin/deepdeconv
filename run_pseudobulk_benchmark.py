@@ -135,11 +135,16 @@ if not ONLY_FIT_BASELINE_NNLS:
 # )
 
 # %% Sanity check 2
+adata_pseudobulk_train, df_proportions_test = create_uniform_pseudobulk_dataset(
+    adata_train, n_sample = N_SAMPLES, n_cells = N_CELLS,
+)
 adata_pseudobulk_test, df_proportions_test = create_uniform_pseudobulk_dataset(
     adata_test, n_sample = N_SAMPLES, n_cells = N_CELLS,
 )
+
 df_test_correlations, df_test_group_correlations = run_sanity_check(
     adata_train=adata_train,
+    adata_pseudobulk_train=adata_pseudobulk_train,
     adata_pseudobulk_test=adata_pseudobulk_test,
     df_proportions_test=df_proportions_test,
     signature=signature,
